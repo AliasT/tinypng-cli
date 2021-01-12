@@ -1,0 +1,12 @@
+[package]
+name = "tinypng-cli"
+version = "0.1.0"
+authors = ["ryan <chai_xb@163.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.13.0"
+reqwest = { version = "0.11"}
+tokio = { version = "1", features = ["full"] }
