@@ -1,15 +1,16 @@
-use base64::{decode, encode};
 use reqwest;
 use std::cell::RefCell;
 use std::convert::AsRef;
 use std::env;
 use std::fs::{self, DirEntry, File};
+use std::future::{Future, Ready};
 use std::io::{self, BufRead, BufReader};
+use std::marker::PhantomData;
 use std::path::Path;
 use std::process;
-use tokio::{task};
-use std::future::{Future, Ready};
+use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
+use tokio::task::{self, JoinHandle};
 
 const TargetURL: &'static str = "https://api.tinify.com/shrink";
 
@@ -22,20 +23,32 @@ async fn main() {
     }
     let target = env::args().nth(1).unwrap_or(".".to_string());
     let client = reqwest::Client::new();
-    let tiny_png = TinyPNG {
-        authorization: &authorization,
-        client,
-        handles: Vec::new(),
+    let mut tiny = Tiny {
+        inner: TinyPNG {
+            authorization,
+            client,
+        },
     };
-    tiny_png.walk(&Path::new(&target));
-    tiny_png.wait().await;
+    let mut handles = Vec::new();
+    // let tiny = tiny.lock().unwrap();
+    tiny.walk(&Path::new(&target), &mut handles);
+
+    for h in handles {
+        // let h = *h;
+        h.await;
+    }
 }
 
-struct TinyPNG<'a> {
-    authorization: &'a str,
+#[derive(Clone)]
+struct TinyPNG {
+    authorization: String,
     client: reqwest::Client,
+}
 
-    handles: Vec<tokio::task::JoinHandle<()>>,
+struct Tiny {
+    inner: TinyPNG,
+    // handles: Vec<JoinHandle<()>>,
+    // phantom: PhantomData<&'b T>,
 }
 
 enum TinyPNGError {
@@ -49,17 +62,36 @@ impl From<reqwest::Error> for TinyPNGError {
     }
 }
 
-impl<'a> TinyPNG<'a> {
-    pub async fn post_file(&self, file_path: &Path) -> Result<(), TinyPNGError> {
-        let f = File::open(file_path).unwrap();
-        let mut reader = BufReader::new(f);
-        reader.fill_buf();
+impl Tiny {
+    pub fn walk(&mut self, dir: &Path, handles: &mut Vec<JoinHandle<()>>) -> io::Result<()> {
+        if dir.is_dir() {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    self.walk(&path, handles)?;
+                } else {
+                    let tiny_png = self.inner.clone();
+                    handles.push(task::spawn(async move {
+                        // let c = tiny_png.lock().unwrap();
+                        tiny_png.post_file(&path).await;
+                    }));
+                }
+            }
+        }
+        Ok(())
+    }
 
+    pub async fn wait(&self) {}
+}
+
+impl TinyPNG {
+    pub async fn post_file(&self, file_path: &Path) -> Result<(), TinyPNGError> {
         let req = self
             .client
             .post(TargetURL)
             .header("Content-Type", "application/x-www-form-urlencoded")
-            .basic_auth("api", Some(self.authorization))
+            .basic_auth("api", Some(&self.authorization))
             .body(fs::read(file_path).unwrap());
 
         // self.handles.push(tokio::task::spawn(async move || ->Result<(), TinyPNGError>{
@@ -71,28 +103,5 @@ impl<'a> TinyPNG<'a> {
     // 替换本地文件
     pub fn download_file() {
         //
-    }
-
-    pub async fn wait(&self) {
-        // for h in self.handles {
-          //  h.await;
-        //}
-    }
-
-    pub fn walk(self, dir: &Path) -> io::Result<()> {
-        if dir.is_dir() {
-            for entry in fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    self.walk(&path)?;
-                } else {
-                    self.handles.push(task::spawn(async {
-                        self.post_file(&path).await;
-                    }));
-                }
-            }
-        }
-        Ok(())
     }
 }
